@@ -1,0 +1,18 @@
+services:
+  - type: worker
+    name: torn-market-monitor
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: TORN_API_KEY
+        sync: false
+      - key: DISCORD_BOT_TOKEN
+        sync: false
+      - key: POLL_INTERVAL
+        sync: false
+      - key: COOLDOWN_MINUTES
+        sync: false
+    region: oregon
+    branch: main
+    autoDeploy: true
