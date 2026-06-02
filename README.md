@@ -19,15 +19,6 @@ A Python Discord bot that monitors the Torn item market and sends Discord notifi
 - `!status` - Show bot status and configuration
 - `!help` - Display help information
 
-1. **Push to GitHub**
-   ```bash
-   git init
-   git add .
-   git commit -m "Initial commit"
-   git branch -M main
-   git remote add origin <your-github-repo-url>
-   git push -u origin main
-   ```
 
 ## Project Structure
 

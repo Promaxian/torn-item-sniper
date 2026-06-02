@@ -1,26 +1,43 @@
-"""
-Configuration management for the Torn Market Monitor bot.
-Loads settings from environment variables and provides defaults.
-"""
-
 import os
+import sys
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
 load_dotenv()
 
-# Required configuration
 TORN_API_KEY = os.getenv("TORN_API_KEY")
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 
-# Optional configuration with defaults
-POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "32"))  # Seconds between market checks
-COOLDOWN_MINUTES = int(os.getenv("COOLDOWN_MINUTES", "5"))  # Notification cooldown per user/item
+POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "32"))
+COOLDOWN_MINUTES = int(os.getenv("COOLDOWN_MINUTES", "5"))
 DATABASE_PATH = os.getenv("DATABASE_PATH", "torn_monitor.db")
 
-# Validation
+
+def get_api_key_interactive():
+    global TORN_API_KEY
+    
+    if TORN_API_KEY and TORN_API_KEY != "your_torn_api_key_here":
+        return TORN_API_KEY
+    
+    print("=" * 50)
+    print("Torn Market Monitor - API Key Setup")
+    print("=" * 50)
+    print()
+    print("Please enter your Torn API key.")
+    print("You can get one from: https://www.torn.com/settings.php")
+    print()
+    print("Note: The key will not be saved. Enter it each time you run the bot,")
+    print("or set it in a .env file for permanent storage.")
+    print()
+    
+    while True:
+        api_key = input("Enter Torn API Key: ").strip()
+        if api_key:
+            TORN_API_KEY = api_key
+            return api_key
+        print("API key cannot be empty. Please try again.")
+
+
 def validate_config():
-    """Validate that all required configuration is present."""
     errors = []
     
     if not TORN_API_KEY or TORN_API_KEY == "your_torn_api_key_here":
@@ -34,8 +51,8 @@ def validate_config():
     
     return True
 
+
 def get_config_summary():
-    """Return a summary of the current configuration (without secrets)."""
     return {
         "poll_interval": POLL_INTERVAL,
         "cooldown_minutes": COOLDOWN_MINUTES,

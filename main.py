@@ -1,20 +1,14 @@
-"""
-Main entry point for the Torn Market Monitor Discord bot.
-Initializes all components and starts the bot.
-"""
-
 import asyncio
 import logging
 import sys
 import discord
 from discord.ext import commands
-from config import validate_config, get_config_summary, DISCORD_BOT_TOKEN
+from config import validate_config, get_config_summary, DISCORD_BOT_TOKEN, TORN_API_KEY, get_api_key_interactive
 from database import Database
 from torn_api import TornAPI
 from notifier import DiscordNotifier
 from market_monitor import MarketMonitor
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -24,87 +18,78 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Global instances
 db = None
 api = None
 monitor = None
 notifier = None
 
-# Set up Discord bot
 intents = discord.Intents.default()
 intents.messages = True
-bot = commands.Bot(command_prefix='!', intents=intents)
+bot = commands.Bot(command_prefix="/", intents=intents, help_command=None)
 
 async def setup_components():
-    """Initialize all bot components."""
-    global db, api, monitor
+    global db, api, monitor, notifier
     
-    # Validate configuration
+    # api_key = get_api_key_interactive() # We'll manage API keys per-user now
+    
     validate_config()
     logger.info("Configuration validated")
     logger.info(f"Config: {get_config_summary()}")
     
-    # Initialize database
     db = Database()
     await db.connect()
     
-    # Initialize Torn API
-    api = TornAPI()
+    # Initialize TornAPI without a global key, will be fetched per-user
+    api = TornAPI(api_key="") 
     
-    # Initialize notifier
-    global notifier
     notifier = DiscordNotifier(bot, api)
     
-    # Initialize market monitor
     monitor = MarketMonitor(db, api, notifier)
     
     logger.info("All components initialized")
 
-# Bot events
+
 @bot.event
 async def on_ready():
-    """Called when the bot is ready."""
     logger.info(f'Logged in as {bot.user} (ID: {bot.user.id})')
     logger.info('------')
     
-    # Start the market monitor
     if monitor:
         await monitor.start()
 
+
 @bot.event
 async def on_command_error(ctx, error):
-    """Handle command errors."""
     if isinstance(error, commands.CommandNotFound):
-        await ctx.send("Unknown command. Use `!help` to see available commands.")
+        await ctx.send("Unknown command. Use /help to see available commands.")
     elif isinstance(error, commands.MissingRequiredArgument):
         await ctx.send(f"Missing required argument. Usage: `{ctx.command}`")
     else:
         logger.error(f"Command error: {error}")
         await ctx.send(f"An error occurred: {error}")
 
-# Bot commands
+
 @bot.command(name='track')
 async def track_item(ctx, item_id: int, max_price: int):
-    """
-    Track an item for price alerts.
-    Usage: !track <item_id> <max_price>
-    Example: !track 206 900000
-    """
     if not db:
         await ctx.send("Bot is not ready yet. Please try again in a moment.")
         return
     
     user_id = str(ctx.author.id)
+    user_api_key = await get_user_api_key_or_request(ctx)
+    if not user_api_key:
+        return # User needs to set API key first
     
+    # Temporarily update the API key for the current operation
+    original_api_key = api.api_key
+    api.api_key = user_api_key
+
     try:
-        # Add to database
         success = await db.add_tracked_item(user_id, item_id, max_price)
         
         if success:
-            # Get item name from cache or API
             item_name = await db.get_item_name(item_id)
             
-            # If not cached, fetch from API
             if item_name == f"Item #{item_id}":
                 data = await api.get_item_market(item_id)
                 if data:
@@ -118,7 +103,6 @@ async def track_item(ctx, item_id: int, max_price: int):
                             average_price=market_data["item"].get("average_price", 0)
                         )
             
-            # Send confirmation
             await notifier.send_confirmation_message(user_id, item_id, item_name, max_price)
             await ctx.send(f"Now tracking **{item_name}** (ID: {item_id}) below ${max_price:,}")
         else:
@@ -127,50 +111,118 @@ async def track_item(ctx, item_id: int, max_price: int):
     except Exception as e:
         logger.error(f"Error in track command: {e}")
         await ctx.send(f"An error occurred: {e}")
+    finally:
+        api.api_key = original_api_key # Reset API key
 
-@bot.command(name='untrack')
-async def untrack_item(ctx, item_id: int):
-    """
-    Stop tracking an item.
-    Usage: !untrack <item_id>
-    Example: !untrack 206
-    """
+def is_dm(ctx):
+    return isinstance(ctx.channel, discord.DMChannel)
+
+async def get_user_api_key_or_request(ctx):
     if not db:
-        await ctx.send("Bot is not ready yet.")
+        await ctx.send("Bot is not ready yet. Please try again in a moment.")
+        return None
+    
+    user_id = str(ctx.author.id)
+    api_key = await db.get_api_key(user_id)
+    if not api_key:
+        await ctx.send("Please set your Torn API key using `/setapikey <your_key>` in a direct message with me first.")
+    return api_key
+
+
+@bot.command(name='setapikey')
+async def set_api_key_command(ctx, api_key: str):
+    if not is_dm(ctx):
+        await ctx.send("For security reasons, please use this command in a direct message with me. 🤫")
+        return
+    if not db:
+        await ctx.send("Bot is not ready yet. Please try again in a moment.")
+        return
+    
+    user_id = str(ctx.author.id)
+    
+    # Basic validation for API key length (Torn API keys are 16 characters)
+    if len(api_key) != 16 or not api_key.isalnum():
+        await ctx.send("That doesn\\\'t look like a valid Torn API key. It should be 16 alphanumeric characters. Double-check it! 🤔")
+        return
+    
+    try:
+        success = await db.set_api_key(user_id, api_key)
+        if success:
+            await ctx.send(f"Your Torn API key has been successfully {'updated' if success else 'set'}! ✨ I'll keep it safe.")
+        else:
+            await ctx.send("Hmm, I couldn't set your API key right now. Please try again later. 🚧")
+    except Exception as e:
+        logger.error(f"Error setting API key: {e}")
+        await ctx.send(f"An error occurred while setting your API key: {e}")
+
+
+@bot.command(name='myapikey')
+async def my_api_key_command(ctx):
+    if not is_dm(ctx):
+        await ctx.send("For security reasons, please use this command in a direct message with me. 🤫")
+        return
+    if not db:
+        await ctx.send("Bot is not ready yet. Please try again in a moment.")
+        return
+
+    user_id = str(ctx.author.id)
+
+    try:
+        api_key = await db.get_api_key(user_id)
+        if api_key:
+            last_updated_cursor = await db.db.execute("SELECT last_updated FROM api_keys WHERE discord_id = ?", (user_id,))
+            last_updated_row = await last_updated_cursor.fetchone()
+            last_updated_at = last_updated_row["last_updated"] if last_updated_row else "N/A"
+            await ctx.send(f"You have an API key set! Last updated: {last_updated_at} 🗓️ (I won't show the key directly for security! 😉)")
+        else:
+            await ctx.send("You haven't set an API key yet. Use `/setapikey <your_key>` in a DM with me to add one! 🔑")
+    except Exception as e:
+        logger.error(f"Error getting API key status: {e}")
+        await ctx.send(f"An error occurred while checking your API key status: {e}")
+
+
+@bot.command(name='removeapikey')
+async def remove_api_key_command(ctx):
+    if not is_dm(ctx):
+        await ctx.send("For security reasons, please use this command in a direct message with me. 🤫")
+        return
+    if not db:
+        await ctx.send("Bot is not ready yet. Please try again in a moment.")
         return
     
     user_id = str(ctx.author.id)
     
     try:
-        success = await db.remove_tracked_item(user_id, item_id)
-        
+        success = await db.delete_api_key(user_id)
         if success:
-            item_name = await db.get_item_name(item_id)
-            await ctx.send(f"Stopped tracking **{item_name}** (ID: {item_id})")
+            await ctx.send("Your API key has been removed. You can set a new one anytime with `/setapikey <your_key>` 🗑️")
         else:
-            await ctx.send("You weren't tracking that item.")
-    
+            await ctx.send("You don't have an API key set, or there was an error removing it.")
     except Exception as e:
-        logger.error(f"Error in untrack command: {e}")
-        await ctx.send(f"An error occurred: {e}")
+        logger.error(f"Error removing API key: {e}")
+        await ctx.send(f"An error occurred while removing your API key: {e}")
+
 
 @bot.command(name='list')
 async def list_tracked(ctx):
-    """
-    List all items you're currently tracking.
-    Usage: !list
-    """
     if not db:
         await ctx.send("Bot is not ready yet.")
         return
     
     user_id = str(ctx.author.id)
+    user_api_key = await get_user_api_key_or_request(ctx)
+    if not user_api_key:
+        return # User needs to set API key first
+    
+    # Temporarily update the API key for the current operation
+    original_api_key = api.api_key
+    api.api_key = user_api_key
     
     try:
         tracked_items = await db.get_user_tracked_items(user_id)
         
         if not tracked_items:
-            await ctx.send("You're not tracking any items. Use `!track <item_id> <max_price>` to start.")
+            await ctx.send("You\\'re not tracking any items. Use /track <item_id> <max_price> to start.")
             return
         
         embed = discord.Embed(
@@ -185,35 +237,38 @@ async def list_tracked(ctx):
                 value=f"Max: ${max_price:,}",
                 inline=False
             )
-        
+
         embed.set_footer(text=f"Total: {len(tracked_items)} items")
         await ctx.send(embed=embed)
     
     except Exception as e:
         logger.error(f"Error in list command: {e}")
         await ctx.send(f"An error occurred: {e}")
+    finally:
+        api.api_key = original_api_key # Reset API key
+
 
 @bot.command(name='price')
 async def update_price(ctx, item_id: int, new_price: int):
-    """
-    Update the price threshold for a tracked item.
-    Usage: !price <item_id> <new_price>
-    Example: !price 206 850000
-    """
     if not db:
         await ctx.send("Bot is not ready yet.")
         return
     
     user_id = str(ctx.author.id)
+    user_api_key = await get_user_api_key_or_request(ctx)
+    if not user_api_key:
+        return # User needs to set API key first
     
+    # Temporarily update the API key for the current operation
+    original_api_key = api.api_key
+    api.api_key = user_api_key
+
     try:
-        # Check if user is tracking this item
         tracked = await db.get_user_tracked_items(user_id)
         if not any(item[0] == item_id for item in tracked):
-            await ctx.send("You're not tracking that item. Use `!track` first.")
+            await ctx.send("You\\'re not tracking that item. Use /track first.")
             return
         
-        # Update the price
         success = await db.add_tracked_item(user_id, item_id, new_price)
         
         if success:
@@ -223,20 +278,17 @@ async def update_price(ctx, item_id: int, new_price: int):
     except Exception as e:
         logger.error(f"Error in price command: {e}")
         await ctx.send(f"An error occurred: {e}")
+    finally:
+        api.api_key = original_api_key # Reset API key
+
 
 @bot.command(name='iteminfo')
 async def item_info(ctx, item_id: int):
-    """
-    Get information about an item.
-    Usage: !iteminfo <item_id>
-    Example: !iteminfo 206
-    """
     if not db:
         await ctx.send("Bot is not ready yet.")
         return
     
     try:
-        # Check cache first
         cached = await db.get_cached_item_info(item_id)
         
         if cached:
@@ -248,14 +300,12 @@ async def item_info(ctx, item_id: int):
             embed.add_field(name="Avg Price", value=f"${cached['average_price']:,}", inline=True)
             embed.set_footer(text="Data from cache")
         else:
-            # Fetch from API
             data = await api.get_item_market(item_id)
             if data:
                 market_data = api.extract_market_data(data)
                 if market_data and market_data["item"].get("name"):
                     item = market_data["item"]
                     
-                    # Cache the info
                     await db.cache_item_info(
                         item_id=item_id,
                         name=item["name"],
@@ -270,7 +320,6 @@ async def item_info(ctx, item_id: int):
                     embed.add_field(name="Type", value=item.get("type", "Unknown"), inline=True)
                     embed.add_field(name="Avg Price", value=f"${item.get('average_price', 0):,}", inline=True)
                     
-                    # Show current cheapest if available
                     cheapest = api.get_cheapest_listing(market_data)
                     if cheapest:
                         embed.add_field(name="Current Cheapest", value=f"${cheapest['price']:,}", inline=True)
@@ -290,12 +339,9 @@ async def item_info(ctx, item_id: int):
         logger.error(f"Error in iteminfo command: {e}")
         await ctx.send(f"An error occurred: {e}")
 
+
 @bot.command(name='status')
 async def bot_status(ctx):
-    """
-    Show bot status and configuration.
-    Usage: !status
-    """
     embed = discord.Embed(
         title="Torn Market Monitor Status",
         color=discord.Color.green()
@@ -315,12 +361,9 @@ async def bot_status(ctx):
     embed.set_footer(text=f"Bot ID: {bot.user.id}")
     await ctx.send(embed=embed)
 
+
 @bot.command(name='help')
 async def bot_help(ctx):
-    """
-    Show help information.
-    Usage: !help
-    """
     embed = discord.Embed(
         title="Torn Market Monitor - Help",
         description="Monitor Torn item market prices and get Discord notifications!",
@@ -328,32 +371,32 @@ async def bot_help(ctx):
     )
     
     embed.add_field(
-        name="!track <item_id> <max_price>",
-        value="Start tracking an item. Example: `!track 206 900000`",
+        name="/track <item_id> <max_price>",
+        value="Start tracking an item. Example: `/track 206 900000`",
         inline=False
     )
     embed.add_field(
-        name="!untrack <item_id>",
-        value="Stop tracking an item. Example: `!untrack 206`",
+        name="/untrack <item_id>",
+        value="Stop tracking an item. Example: `/untrack 206`",
         inline=False
     )
     embed.add_field(
-        name="!price <item_id> <new_price>",
-        value="Update price threshold. Example: `!price 206 850000`",
+        name="/price <item_id> <new_price>",
+        value="Update price threshold. Example: `/price 206 850000`",
         inline=False
     )
     embed.add_field(
-        name="!list",
+        name="/list",
         value="Show all your tracked items",
         inline=False
     )
     embed.add_field(
-        name="!iteminfo <item_id>",
-        value="Get item information. Example: `!iteminfo 206`",
+        name="/iteminfo <item_id>",
+        value="Get item information. Example: `/iteminfo 206`",
         inline=False
     )
     embed.add_field(
-        name="!status",
+        name="/status",
         value="Show bot status and configuration",
         inline=False
     )
@@ -361,10 +404,8 @@ async def bot_help(ctx):
     embed.set_footer(text="Notifications are sent via DM when prices drop below your threshold")
     await ctx.send(embed=embed)
 
+
 async def cleanup():
-    """Clean up resources on shutdown."""
-    global db, api, monitor
-    
     logger.info("Cleaning up resources...")
     
     if monitor:
@@ -378,13 +419,11 @@ async def cleanup():
     
     logger.info("Cleanup complete")
 
+
 async def main():
-    """Main entry point."""
     try:
-        # Setup components
         await setup_components()
         
-        # Start the bot
         await bot.start(DISCORD_BOT_TOKEN)
     
     except KeyboardInterrupt:
@@ -393,6 +432,7 @@ async def main():
         logger.error(f"Fatal error: {e}")
     finally:
         await cleanup()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
