@@ -30,25 +30,24 @@ bot = commands.Bot(command_prefix="/", intents=intents, help_command=None)
 
 async def setup_components():
     global db, api, monitor, notifier
-    
+
     # api_key = get_api_key_interactive() # We'll manage API keys per-user now
-    
+
     validate_config()
     logger.info("Configuration validated")
     logger.info(f"Config: {get_config_summary()}")
-    
+
     db = Database()
     await db.connect()
-    
-    # Initialize TornAPI without a global key, will be fetched per-user
-    api = TornAPI(api_key="") 
-    
-    notifier = DiscordNotifier(bot, api)
-    
-    monitor = MarketMonitor(db, api, notifier)
-    
-    logger.info("All components initialized")
 
+    # Initialize TornAPI without a global key, will be fetched per-user
+    api = TornAPI(api_key="")
+
+    notifier = DiscordNotifier(bot, api)
+
+    monitor = MarketMonitor(db, api, notifier)
+
+    logger.info("All components initialized")
 
 @bot.event
 async def on_ready():
@@ -62,7 +61,6 @@ async def on_ready():
     if monitor:
         await monitor.start()
 
-
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error):
     if isinstance(error, app_commands.CommandNotFound):
@@ -72,7 +70,6 @@ async def on_app_command_error(interaction: discord.Interaction, error):
     else:
         logger.error(f"Command error: {error}")
         await interaction.response.send_message(f"An error occurred: {error}")
-
 
 @bot.tree.command(name='track', description='Start tracking an item')
 @app_commands.describe(item_id="The item ID to track", max_price="Maximum price threshold")
@@ -131,55 +128,25 @@ async def get_user_api_key_or_request(interaction: discord.Interaction):
     user_id = str(interaction.user.id)
     api_key = await db.get_api_key(user_id)
     if not api_key:
-        await interaction.response.send_message("Please set your Torn API key using `/setapikey <your_key>` in a direct message with me first.")
+        await interaction.response.send_message("Please set your Torn API key using `/apikey set <your_key>` in a direct message with me first.")
     return api_key
 
-
-@bot.tree.command(name='setapikey', description='Set your Torn API key')
-@app_commands.describe(api_key="Your Torn API key (16 alphanumeric characters)")
-async def set_api_key_command(interaction: discord.Interaction, api_key: str):
+@bot.tree.command(name='apikey', description='Manage your Torn API key')
+@app_commands.describe(
+    action="Action to perform (set, check, remove)",
+    api_key="Your Torn API key (required for set action, 16 alphanumeric characters)"
+)
+async def api_key_command(interaction: discord.Interaction, action: str, api_key: str = None):
     if not is_dm(interaction):
         # Send a DM to the user instead of responding in the channel
         try:
             user = interaction.user
-            await user.send("For security reasons, please use this command in a direct message with me. 🤫")
+            await user.send("For security reasons, please use this command in a direct message with me.")
             await interaction.response.send_message("I've sent you a direct message with instructions.", ephemeral=True)
         except discord.Forbidden:
-            await interaction.response.send_message("I couldn't send you a DM. Please enable DMs from server members and try the command in a direct message with me. 🤫", ephemeral=True)
-        return
-    if not db:
-        await interaction.response.send_message("Bot is not ready yet. Please try again in a moment.")
+            await interaction.response.send_message("I couldn't send you a DM. Please enable DMs from server members and try the command in a direct message with me.", ephemeral=True)
         return
 
-    user_id = str(interaction.user.id)
-
-    # Basic validation for API key length (Torn API keys are 16 characters)
-    if len(api_key) != 16 or not api_key.isalnum():
-        await interaction.response.send_message("That doesn\\\'t look like a valid Torn API key. It should be 16 alphanumeric characters. Double-check it! 🤔")
-        return
-
-    try:
-        success = await db.set_api_key(user_id, api_key)
-        if success:
-            await interaction.response.send_message(f"Your Torn API key has been successfully {'updated' if success else 'set'}! ✨ I'll keep it safe.")
-        else:
-            await interaction.response.send_message("Hmm, I couldn't set your API key right now. Please try again later. 🚧")
-    except Exception as e:
-        logger.error(f"Error setting API key: {e}")
-        await interaction.response.send_message(f"An error occurred while setting your API key: {e}")
-
-
-@bot.tree.command(name='myapikey', description='Check your API key status')
-async def my_api_key_command(interaction: discord.Interaction):
-    if not is_dm(interaction):
-        # Send a DM to the user instead of responding in the channel
-        try:
-            user = interaction.user
-            await user.send("For security reasons, please use this command in a direct message with me. 🤫")
-            await interaction.response.send_message("I've sent you a direct message with instructions.", ephemeral=True)
-        except discord.Forbidden:
-            await interaction.response.send_message("I couldn't send you a DM. Please enable DMs from server members and try the command in a direct message with me. 🤫", ephemeral=True)
-        return
     if not db:
         await interaction.response.send_message("Bot is not ready yet. Please try again in a moment.")
         return
@@ -187,46 +154,45 @@ async def my_api_key_command(interaction: discord.Interaction):
     user_id = str(interaction.user.id)
 
     try:
-        api_key = await db.get_api_key(user_id)
-        if api_key:
-            last_updated_cursor = await db.db.execute("SELECT last_updated FROM api_keys WHERE discord_id = ?", (user_id,))
-            last_updated_row = await last_updated_cursor.fetchone()
-            last_updated_at = last_updated_row["last_updated"] if last_updated_row else "N/A"
-            await interaction.response.send_message(f"You have an API key set! Last updated: {last_updated_at} 🗓️ (I won't show the key directly for security! 😉)")
+        if action == "set":
+            if not api_key:
+                await interaction.response.send_message("Please provide an API key to set.")
+                return
+
+            # Basic validation for API key length (Torn API keys are 16 characters)
+            if len(api_key) != 16 or not api_key.isalnum():
+                await interaction.response.send_message("That doesn't look like a valid Torn API key. It should be 16 alphanumeric characters. Double-check it!")
+                return
+
+            success = await db.set_api_key(user_id, api_key)
+            if success:
+                await interaction.response.send_message("Your Torn API key has been successfully set! I'll keep it safe.")
+            else:
+                await interaction.response.send_message("Hmm, I couldn't set your API key right now. Please try again later.")
+
+        elif action == "check":
+            api_key = await db.get_api_key(user_id)
+            if api_key:
+                last_updated_cursor = await db.db.execute("SELECT last_updated FROM api_keys WHERE discord_id = ?", (user_id,))
+                last_updated_row = await last_updated_cursor.fetchone()
+                last_updated_at = last_updated_row["last_updated"] if last_updated_row else "N/A"
+                await interaction.response.send_message(f"You have an API key set! Last updated: {last_updated_at} (I won't show the key directly for security!)")
+            else:
+                await interaction.response.send_message("You haven't set an API key yet. Use `/apikey set <your_key>` to add one!")
+
+        elif action == "remove":
+            success = await db.delete_api_key(user_id)
+            if success:
+                await interaction.response.send_message("Your API key has been removed. You can set a new one anytime with `/apikey set <your_key>`")
+            else:
+                await interaction.response.send_message("You don't have an API key set, or there was an error removing it.")
+
         else:
-            await interaction.response.send_message("You haven't set an API key yet. Use `/setapikey <your_key>` in a DM with me to add one! 🔑")
+            await interaction.response.send_message("Invalid action. Use set, check, or remove.")
+
     except Exception as e:
-        logger.error(f"Error getting API key status: {e}")
-        await interaction.response.send_message(f"An error occurred while checking your API key status: {e}")
-
-
-@bot.tree.command(name='removeapikey', description='Remove your stored API key')
-async def remove_api_key_command(interaction: discord.Interaction):
-    if not is_dm(interaction):
-        # Send a DM to the user instead of responding in the channel
-        try:
-            user = interaction.user
-            await user.send("For security reasons, please use this command in a direct message with me. 🤫")
-            await interaction.response.send_message("I've sent you a direct message with instructions.", ephemeral=True)
-        except discord.Forbidden:
-            await interaction.response.send_message("I couldn't send you a DM. Please enable DMs from server members and try the command in a direct message with me. 🤫", ephemeral=True)
-        return
-    if not db:
-        await interaction.response.send_message("Bot is not ready yet. Please try again in a moment.")
-        return
-
-    user_id = str(interaction.user.id)
-
-    try:
-        success = await db.delete_api_key(user_id)
-        if success:
-            await interaction.response.send_message("Your API key has been removed. You can set a new one anytime with `/setapikey <your_key>` 🗑️")
-        else:
-            await interaction.response.send_message("You don't have an API key set, or there was an error removing it.")
-    except Exception as e:
-        logger.error(f"Error removing API key: {e}")
-        await interaction.response.send_message(f"An error occurred while removing your API key: {e}")
-
+        logger.error(f"Error in API key command: {e}")
+        await interaction.response.send_message(f"An error occurred: {e}")
 
 @bot.tree.command(name='list', description='Show all your tracked items')
 async def list_tracked(interaction: discord.Interaction):
@@ -247,7 +213,7 @@ async def list_tracked(interaction: discord.Interaction):
         tracked_items = await db.get_user_tracked_items(user_id)
 
         if not tracked_items:
-            await interaction.response.send_message("You\\'re not tracking any items. Use /track <item_id> <max_price> to start.")
+            await interaction.response.send_message("You're not tracking any items. Use /track <item_id> <max_price> to start.")
             return
 
         embed = discord.Embed(
@@ -272,7 +238,6 @@ async def list_tracked(interaction: discord.Interaction):
     finally:
         api.api_key = original_api_key # Reset API key
 
-
 @bot.tree.command(name='price', description='Update price threshold for a tracked item')
 @app_commands.describe(item_id="The item ID to update", new_price="New maximum price threshold")
 async def update_price(interaction: discord.Interaction, item_id: int, new_price: int):
@@ -292,7 +257,7 @@ async def update_price(interaction: discord.Interaction, item_id: int, new_price
     try:
         tracked = await db.get_user_tracked_items(user_id)
         if not any(item[0] == item_id for item in tracked):
-            await interaction.response.send_message("You\\'re not tracking that item. Use /track first.")
+            await interaction.response.send_message("You're not tracking that item. Use /track first.")
             return
 
         success = await db.add_tracked_item(user_id, item_id, new_price)
@@ -306,7 +271,6 @@ async def update_price(interaction: discord.Interaction, item_id: int, new_price
         await interaction.response.send_message(f"An error occurred: {e}")
     finally:
         api.api_key = original_api_key # Reset API key
-
 
 @bot.tree.command(name='iteminfo', description='Get detailed information about an item')
 @app_commands.describe(item_id="The item ID to look up")
@@ -366,7 +330,6 @@ async def item_info(interaction: discord.Interaction, item_id: int):
         logger.error(f"Error in iteminfo command: {e}")
         await interaction.response.send_message(f"An error occurred: {e}")
 
-
 @bot.tree.command(name='status', description='Show bot status and configuration')
 async def bot_status(interaction: discord.Interaction):
     embed = discord.Embed(
@@ -387,7 +350,6 @@ async def bot_status(interaction: discord.Interaction):
 
     embed.set_footer(text=f"Bot ID: {bot.user.id}")
     await interaction.response.send_message(embed=embed)
-
 
 @bot.tree.command(name='help', description='Show help information and available commands')
 async def bot_help(interaction: discord.Interaction):
@@ -431,35 +393,32 @@ async def bot_help(interaction: discord.Interaction):
     embed.set_footer(text="Notifications are sent via DM when prices drop below your threshold")
     await interaction.response.send_message(embed=embed)
 
-
 async def cleanup():
     logger.info("Cleaning up resources...")
-    
+
     if monitor:
         await monitor.stop()
-    
+
     if db:
         await db.close()
-    
+
     if api:
         await api.close()
-    
-    logger.info("Cleanup complete")
 
+    logger.info("Cleanup complete")
 
 async def main():
     try:
         await setup_components()
-        
+
         await bot.start(DISCORD_BOT_TOKEN)
-    
+
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
     except Exception as e:
         logger.error(f"Fatal error: {e}")
     finally:
         await cleanup()
-
 
 if __name__ == "__main__":
     asyncio.run(main())
