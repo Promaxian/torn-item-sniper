@@ -393,6 +393,59 @@ async def bot_help(interaction: discord.Interaction):
     embed.set_footer(text="Notifications are sent via DM when prices drop below your threshold")
     await interaction.response.send_message(embed=embed)
 
+@bot.tree.command(name='untrack', description='Stop tracking an item')
+@app_commands.describe(item_id="The item ID to stop tracking")
+async def untrack_item(interaction: discord.Interaction, item_id: int):
+    if not db:
+        await interaction.response.send_message("Bot is not ready yet.")
+        return
+
+    user_id = str(interaction.user.id)
+    user_api_key = await get_user_api_key_or_request(interaction)
+    if not user_api_key:
+        return # User needs to set API key first
+
+    try:
+        success = await db.remove_tracked_item(user_id, item_id)
+
+        if success:
+            item_name = await db.get_item_name(item_id)
+            await interaction.response.send_message(f"Stopped tracking **{item_name}** (ID: {item_id})")
+        else:
+            await interaction.response.send_message(f"You weren't tracking item {item_id} or there was an error removing it.")
+
+    except Exception as e:
+        logger.error(f"Error in untrack command: {e}")
+        await interaction.response.send_message(f"An error occurred: {e}")
+    embed.add_field(
+        name="/untrack <item_id>",
+        value="Stop tracking an item. Example: `/untrack 206`",
+        inline=False
+    )
+    embed.add_field(
+        name="/price <item_id> <new_price>",
+        value="Update price threshold. Example: `/price 206 850000`",
+        inline=False
+    )
+    embed.add_field(
+        name="/list",
+        value="Show all your tracked items",
+        inline=False
+    )
+    embed.add_field(
+        name="/iteminfo <item_id>",
+        value="Get item information. Example: `/iteminfo 206`",
+        inline=False
+    )
+    embed.add_field(
+        name="/status",
+        value="Show bot status and configuration",
+        inline=False
+    )
+
+    embed.set_footer(text="Notifications are sent via DM when prices drop below your threshold")
+    await interaction.response.send_message(embed=embed)
+
 async def cleanup():
     logger.info("Cleaning up resources...")
 

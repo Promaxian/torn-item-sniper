@@ -83,21 +83,50 @@ class TornAPI:
     def extract_market_data(self, data: Dict) -> Optional[Dict[str, Any]]:
         if not data or "itemmarket" not in data:
             return None
-        
+
         itemmarket = data["itemmarket"]
-        
+
         return {
             "item": itemmarket.get("item", {}),
             "listings": itemmarket.get("listings", []),
             "cache_timestamp": itemmarket.get("cache_timestamp"),
             "cache_delay": itemmarket.get("cache_delay", 30),
-            "total_listings": data.get("_metadata", {}).get("total", 0)
+            "total_listings": data.get("_metadata", {}).get("total", 0),
+            "is_bazaar": False
+        }
+
+    def extract_bazaar_data(self, data: Dict) -> Optional[Dict[str, Any]]:
+        if not data or "bazaar" not in data:
+            return None
+
+        bazaar = data["bazaar"]
+        specialized = bazaar.get("specialized", [])
+
+        # Convert bazaar shops to a format similar to market listings
+        listings = []
+        for shop in specialized:
+            if shop.get("is_open", False):
+                listings.append({
+                    "shop_id": shop["id"],
+                    "shop_name": shop["name"],
+                    "weekly_customers": shop["weekly_customers"],
+                    "is_bazaar": True
+                })
+
+        return {
+            "item": {"id": data.get("item_id", "unknown")},  # We'll need to pass item_id
+            "listings": listings,
+            "is_bazaar": True
         }
     
     def get_cheapest_listing(self, market_data: Dict) -> Optional[Dict]:
         listings = market_data.get("listings", [])
         if listings:
-            return listings[0]
+            listing = listings[0]
+            # Add a flag to indicate if this is a bazaar listing
+            # For now, we'll assume market listings (bazaar would need different endpoint)
+            listing["is_bazaar"] = False
+            return listing
         return None
     
     def format_price(self, price: int) -> str:
