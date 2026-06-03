@@ -139,7 +139,13 @@ async def get_user_api_key_or_request(interaction: discord.Interaction):
 @app_commands.describe(api_key="Your Torn API key (16 alphanumeric characters)")
 async def set_api_key_command(interaction: discord.Interaction, api_key: str):
     if not is_dm(interaction):
-        await interaction.response.send_message("For security reasons, please use this command in a direct message with me. 🤫")
+        # Send a DM to the user instead of responding in the channel
+        try:
+            user = interaction.user
+            await user.send("For security reasons, please use this command in a direct message with me. 🤫")
+            await interaction.response.send_message("I've sent you a direct message with instructions.", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message("I couldn't send you a DM. Please enable DMs from server members and try the command in a direct message with me. 🤫", ephemeral=True)
         return
     if not db:
         await interaction.response.send_message("Bot is not ready yet. Please try again in a moment.")
@@ -166,7 +172,13 @@ async def set_api_key_command(interaction: discord.Interaction, api_key: str):
 @bot.tree.command(name='myapikey', description='Check your API key status')
 async def my_api_key_command(interaction: discord.Interaction):
     if not is_dm(interaction):
-        await interaction.response.send_message("For security reasons, please use this command in a direct message with me. 🤫")
+        # Send a DM to the user instead of responding in the channel
+        try:
+            user = interaction.user
+            await user.send("For security reasons, please use this command in a direct message with me. 🤫")
+            await interaction.response.send_message("I've sent you a direct message with instructions.", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message("I couldn't send you a DM. Please enable DMs from server members and try the command in a direct message with me. 🤫", ephemeral=True)
         return
     if not db:
         await interaction.response.send_message("Bot is not ready yet. Please try again in a moment.")
@@ -191,7 +203,13 @@ async def my_api_key_command(interaction: discord.Interaction):
 @bot.tree.command(name='removeapikey', description='Remove your stored API key')
 async def remove_api_key_command(interaction: discord.Interaction):
     if not is_dm(interaction):
-        await interaction.response.send_message("For security reasons, please use this command in a direct message with me. 🤫")
+        # Send a DM to the user instead of responding in the channel
+        try:
+            user = interaction.user
+            await user.send("For security reasons, please use this command in a direct message with me. 🤫")
+            await interaction.response.send_message("I've sent you a direct message with instructions.", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message("I couldn't send you a DM. Please enable DMs from server members and try the command in a direct message with me. 🤫", ephemeral=True)
         return
     if not db:
         await interaction.response.send_message("Bot is not ready yet. Please try again in a moment.")
