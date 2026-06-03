@@ -2,6 +2,7 @@ import asyncio
 import logging
 import sys
 import discord
+from discord import app_commands
 from discord.ext import commands
 from config import validate_config, get_config_summary, DISCORD_BOT_TOKEN, TORN_API_KEY, get_api_key_interactive
 from database import Database
@@ -53,43 +54,48 @@ async def setup_components():
 async def on_ready():
     logger.info(f'Logged in as {bot.user} (ID: {bot.user.id})')
     logger.info('------')
-    
+
+    # Sync slash commands
+    await bot.tree.sync()
+    logger.info("Slash commands synced")
+
     if monitor:
         await monitor.start()
 
 
-@bot.event
-async def on_command_error(ctx, error):
-    if isinstance(error, commands.CommandNotFound):
-        await ctx.send("Unknown command. Use /help to see available commands.")
-    elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send(f"Missing required argument. Usage: `{ctx.command}`")
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.CommandNotFound):
+        await interaction.response.send_message("Unknown command. Use /help to see available commands.")
+    elif isinstance(error, app_commands.MissingRequiredArgument):
+        await interaction.response.send_message(f"Missing required argument. Usage: `{interaction.command}`")
     else:
         logger.error(f"Command error: {error}")
-        await ctx.send(f"An error occurred: {error}")
+        await interaction.response.send_message(f"An error occurred: {error}")
 
 
-@bot.command(name='track')
-async def track_item(ctx, item_id: int, max_price: int):
+@bot.tree.command(name='track', description='Start tracking an item')
+@app_commands.describe(item_id="The item ID to track", max_price="Maximum price threshold")
+async def track_item(interaction: discord.Interaction, item_id: int, max_price: int):
     if not db:
-        await ctx.send("Bot is not ready yet. Please try again in a moment.")
+        await interaction.response.send_message("Bot is not ready yet. Please try again in a moment.")
         return
-    
-    user_id = str(ctx.author.id)
-    user_api_key = await get_user_api_key_or_request(ctx)
+
+    user_id = str(interaction.user.id)
+    user_api_key = await get_user_api_key_or_request(interaction)
     if not user_api_key:
         return # User needs to set API key first
-    
+
     # Temporarily update the API key for the current operation
     original_api_key = api.api_key
     api.api_key = user_api_key
 
     try:
         success = await db.add_tracked_item(user_id, item_id, max_price)
-        
+
         if success:
             item_name = await db.get_item_name(item_id)
-            
+
             if item_name == f"Item #{item_id}":
                 data = await api.get_item_market(item_id)
                 if data:
@@ -102,70 +108,71 @@ async def track_item(ctx, item_id: int, max_price: int):
                             item_type=market_data["item"].get("type", ""),
                             average_price=market_data["item"].get("average_price", 0)
                         )
-            
+
             await notifier.send_confirmation_message(user_id, item_id, item_name, max_price)
-            await ctx.send(f"Now tracking **{item_name}** (ID: {item_id}) below ${max_price:,}")
+            await interaction.response.send_message(f"Now tracking **{item_name}** (ID: {item_id}) below ${max_price:,}")
         else:
-            await ctx.send("Failed to add tracking. Please try again.")
-    
+            await interaction.response.send_message("Failed to add tracking. Please try again.")
+
     except Exception as e:
         logger.error(f"Error in track command: {e}")
-        await ctx.send(f"An error occurred: {e}")
+        await interaction.response.send_message(f"An error occurred: {e}")
     finally:
         api.api_key = original_api_key # Reset API key
 
-def is_dm(ctx):
-    return isinstance(ctx.channel, discord.DMChannel)
+def is_dm(interaction: discord.Interaction):
+    return isinstance(interaction.channel, discord.DMChannel)
 
-async def get_user_api_key_or_request(ctx):
+async def get_user_api_key_or_request(interaction: discord.Interaction):
     if not db:
-        await ctx.send("Bot is not ready yet. Please try again in a moment.")
+        await interaction.response.send_message("Bot is not ready yet. Please try again in a moment.")
         return None
-    
-    user_id = str(ctx.author.id)
+
+    user_id = str(interaction.user.id)
     api_key = await db.get_api_key(user_id)
     if not api_key:
-        await ctx.send("Please set your Torn API key using `/setapikey <your_key>` in a direct message with me first.")
+        await interaction.response.send_message("Please set your Torn API key using `/setapikey <your_key>` in a direct message with me first.")
     return api_key
 
 
-@bot.command(name='setapikey')
-async def set_api_key_command(ctx, api_key: str):
-    if not is_dm(ctx):
-        await ctx.send("For security reasons, please use this command in a direct message with me. 🤫")
+@bot.tree.command(name='setapikey', description='Set your Torn API key')
+@app_commands.describe(api_key="Your Torn API key (16 alphanumeric characters)")
+async def set_api_key_command(interaction: discord.Interaction, api_key: str):
+    if not is_dm(interaction):
+        await interaction.response.send_message("For security reasons, please use this command in a direct message with me. 🤫")
         return
     if not db:
-        await ctx.send("Bot is not ready yet. Please try again in a moment.")
+        await interaction.response.send_message("Bot is not ready yet. Please try again in a moment.")
         return
-    
-    user_id = str(ctx.author.id)
-    
+
+    user_id = str(interaction.user.id)
+
     # Basic validation for API key length (Torn API keys are 16 characters)
     if len(api_key) != 16 or not api_key.isalnum():
-        await ctx.send("That doesn\\\'t look like a valid Torn API key. It should be 16 alphanumeric characters. Double-check it! 🤔")
+        await interaction.response.send_message("That doesn\\\'t look like a valid Torn API key. It should be 16 alphanumeric characters. Double-check it! 🤔")
         return
-    
+
     try:
         success = await db.set_api_key(user_id, api_key)
         if success:
-            await ctx.send(f"Your Torn API key has been successfully {'updated' if success else 'set'}! ✨ I'll keep it safe.")
+            await interaction.response.send_message(f"Your Torn API key has been successfully {'updated' if success else 'set'}! ✨ I'll keep it safe.")
         else:
-            await ctx.send("Hmm, I couldn't set your API key right now. Please try again later. 🚧")
+            await interaction.response.send_message("Hmm, I couldn't set your API key right now. Please try again later. 🚧")
     except Exception as e:
         logger.error(f"Error setting API key: {e}")
-        await ctx.send(f"An error occurred while setting your API key: {e}")
+        await interaction.response.send_message(f"An error occurred while setting your API key: {e}")
 
 
-@bot.command(name='myapikey')
-async def my_api_key_command(ctx):
-    if not is_dm(ctx):
-        await ctx.send("For security reasons, please use this command in a direct message with me. 🤫")
+@bot.tree.command(name='myapikey', description='Check your API key status')
+async def my_api_key_command(interaction: discord.Interaction):
+    if not is_dm(interaction):
+        await interaction.response.send_message("For security reasons, please use this command in a direct message with me. 🤫")
         return
     if not db:
-        await ctx.send("Bot is not ready yet. Please try again in a moment.")
+        await interaction.response.send_message("Bot is not ready yet. Please try again in a moment.")
         return
 
-    user_id = str(ctx.author.id)
+    user_id = str(interaction.user.id)
 
     try:
         api_key = await db.get_api_key(user_id)
@@ -173,63 +180,63 @@ async def my_api_key_command(ctx):
             last_updated_cursor = await db.db.execute("SELECT last_updated FROM api_keys WHERE discord_id = ?", (user_id,))
             last_updated_row = await last_updated_cursor.fetchone()
             last_updated_at = last_updated_row["last_updated"] if last_updated_row else "N/A"
-            await ctx.send(f"You have an API key set! Last updated: {last_updated_at} 🗓️ (I won't show the key directly for security! 😉)")
+            await interaction.response.send_message(f"You have an API key set! Last updated: {last_updated_at} 🗓️ (I won't show the key directly for security! 😉)")
         else:
-            await ctx.send("You haven't set an API key yet. Use `/setapikey <your_key>` in a DM with me to add one! 🔑")
+            await interaction.response.send_message("You haven't set an API key yet. Use `/setapikey <your_key>` in a DM with me to add one! 🔑")
     except Exception as e:
         logger.error(f"Error getting API key status: {e}")
-        await ctx.send(f"An error occurred while checking your API key status: {e}")
+        await interaction.response.send_message(f"An error occurred while checking your API key status: {e}")
 
 
-@bot.command(name='removeapikey')
-async def remove_api_key_command(ctx):
-    if not is_dm(ctx):
-        await ctx.send("For security reasons, please use this command in a direct message with me. 🤫")
+@bot.tree.command(name='removeapikey', description='Remove your stored API key')
+async def remove_api_key_command(interaction: discord.Interaction):
+    if not is_dm(interaction):
+        await interaction.response.send_message("For security reasons, please use this command in a direct message with me. 🤫")
         return
     if not db:
-        await ctx.send("Bot is not ready yet. Please try again in a moment.")
+        await interaction.response.send_message("Bot is not ready yet. Please try again in a moment.")
         return
-    
-    user_id = str(ctx.author.id)
-    
+
+    user_id = str(interaction.user.id)
+
     try:
         success = await db.delete_api_key(user_id)
         if success:
-            await ctx.send("Your API key has been removed. You can set a new one anytime with `/setapikey <your_key>` 🗑️")
+            await interaction.response.send_message("Your API key has been removed. You can set a new one anytime with `/setapikey <your_key>` 🗑️")
         else:
-            await ctx.send("You don't have an API key set, or there was an error removing it.")
+            await interaction.response.send_message("You don't have an API key set, or there was an error removing it.")
     except Exception as e:
         logger.error(f"Error removing API key: {e}")
-        await ctx.send(f"An error occurred while removing your API key: {e}")
+        await interaction.response.send_message(f"An error occurred while removing your API key: {e}")
 
 
-@bot.command(name='list')
-async def list_tracked(ctx):
+@bot.tree.command(name='list', description='Show all your tracked items')
+async def list_tracked(interaction: discord.Interaction):
     if not db:
-        await ctx.send("Bot is not ready yet.")
+        await interaction.response.send_message("Bot is not ready yet.")
         return
-    
-    user_id = str(ctx.author.id)
-    user_api_key = await get_user_api_key_or_request(ctx)
+
+    user_id = str(interaction.user.id)
+    user_api_key = await get_user_api_key_or_request(interaction)
     if not user_api_key:
         return # User needs to set API key first
-    
+
     # Temporarily update the API key for the current operation
     original_api_key = api.api_key
     api.api_key = user_api_key
-    
+
     try:
         tracked_items = await db.get_user_tracked_items(user_id)
-        
+
         if not tracked_items:
-            await ctx.send("You\\'re not tracking any items. Use /track <item_id> <max_price> to start.")
+            await interaction.response.send_message("You\\'re not tracking any items. Use /track <item_id> <max_price> to start.")
             return
-        
+
         embed = discord.Embed(
             title="Your Tracked Items",
             color=discord.Color.blue()
         )
-        
+
         for item_id, max_price in tracked_items:
             item_name = await db.get_item_name(item_id)
             embed.add_field(
@@ -239,26 +246,27 @@ async def list_tracked(ctx):
             )
 
         embed.set_footer(text=f"Total: {len(tracked_items)} items")
-        await ctx.send(embed=embed)
-    
+        await interaction.response.send_message(embed=embed)
+
     except Exception as e:
         logger.error(f"Error in list command: {e}")
-        await ctx.send(f"An error occurred: {e}")
+        await interaction.response.send_message(f"An error occurred: {e}")
     finally:
         api.api_key = original_api_key # Reset API key
 
 
-@bot.command(name='price')
-async def update_price(ctx, item_id: int, new_price: int):
+@bot.tree.command(name='price', description='Update price threshold for a tracked item')
+@app_commands.describe(item_id="The item ID to update", new_price="New maximum price threshold")
+async def update_price(interaction: discord.Interaction, item_id: int, new_price: int):
     if not db:
-        await ctx.send("Bot is not ready yet.")
+        await interaction.response.send_message("Bot is not ready yet.")
         return
-    
-    user_id = str(ctx.author.id)
-    user_api_key = await get_user_api_key_or_request(ctx)
+
+    user_id = str(interaction.user.id)
+    user_api_key = await get_user_api_key_or_request(interaction)
     if not user_api_key:
         return # User needs to set API key first
-    
+
     # Temporarily update the API key for the current operation
     original_api_key = api.api_key
     api.api_key = user_api_key
@@ -266,31 +274,32 @@ async def update_price(ctx, item_id: int, new_price: int):
     try:
         tracked = await db.get_user_tracked_items(user_id)
         if not any(item[0] == item_id for item in tracked):
-            await ctx.send("You\\'re not tracking that item. Use /track first.")
+            await interaction.response.send_message("You\\'re not tracking that item. Use /track first.")
             return
-        
+
         success = await db.add_tracked_item(user_id, item_id, new_price)
-        
+
         if success:
             item_name = await db.get_item_name(item_id)
-            await ctx.send(f"Updated **{item_name}** price threshold to ${new_price:,}")
-    
+            await interaction.response.send_message(f"Updated **{item_name}** price threshold to ${new_price:,}")
+
     except Exception as e:
         logger.error(f"Error in price command: {e}")
-        await ctx.send(f"An error occurred: {e}")
+        await interaction.response.send_message(f"An error occurred: {e}")
     finally:
         api.api_key = original_api_key # Reset API key
 
 
-@bot.command(name='iteminfo')
-async def item_info(ctx, item_id: int):
+@bot.tree.command(name='iteminfo', description='Get detailed information about an item')
+@app_commands.describe(item_id="The item ID to look up")
+async def item_info(interaction: discord.Interaction, item_id: int):
     if not db:
-        await ctx.send("Bot is not ready yet.")
+        await interaction.response.send_message("Bot is not ready yet.")
         return
-    
+
     try:
         cached = await db.get_cached_item_info(item_id)
-        
+
         if cached:
             embed = discord.Embed(
                 title=cached['name'],
@@ -305,71 +314,71 @@ async def item_info(ctx, item_id: int):
                 market_data = api.extract_market_data(data)
                 if market_data and market_data["item"].get("name"):
                     item = market_data["item"]
-                    
+
                     await db.cache_item_info(
                         item_id=item_id,
                         name=item["name"],
                         item_type=item.get("type", ""),
                         average_price=item.get("average_price", 0)
                     )
-                    
+
                     embed = discord.Embed(
                         title=item['name'],
                         color=discord.Color.green()
                     )
                     embed.add_field(name="Type", value=item.get("type", "Unknown"), inline=True)
                     embed.add_field(name="Avg Price", value=f"${item.get('average_price', 0):,}", inline=True)
-                    
+
                     cheapest = api.get_cheapest_listing(market_data)
                     if cheapest:
                         embed.add_field(name="Current Cheapest", value=f"${cheapest['price']:,}", inline=True)
                         embed.add_field(name="Amount", value=f"{cheapest['amount']:,}", inline=True)
-                    
+
                     embed.set_footer(text="Data from Torn API")
                 else:
-                    await ctx.send(f"Item #{item_id} not found.")
+                    await interaction.response.send_message(f"Item #{item_id} not found.")
                     return
             else:
-                await ctx.send(f"Could not fetch information for item #{item_id}.")
+                await interaction.response.send_message(f"Could not fetch information for item #{item_id}.")
                 return
-        
-        await ctx.send(embed=embed)
-    
+
+        await interaction.response.send_message(embed=embed)
+
     except Exception as e:
         logger.error(f"Error in iteminfo command: {e}")
-        await ctx.send(f"An error occurred: {e}")
+        await interaction.response.send_message(f"An error occurred: {e}")
 
 
-@bot.command(name='status')
-async def bot_status(ctx):
+@bot.tree.command(name='status', description='Show bot status and configuration')
+async def bot_status(interaction: discord.Interaction):
     embed = discord.Embed(
         title="Torn Market Monitor Status",
         color=discord.Color.green()
     )
-    
+
     config = get_config_summary()
     embed.add_field(name="Poll Interval", value=f"{config['poll_interval']} seconds", inline=True)
     embed.add_field(name="Cooldown", value=f"{config['cooldown_minutes']} minutes", inline=True)
     embed.add_field(name="Monitor Running", value="Yes" if monitor and monitor.is_running() else "No", inline=True)
-    
+
     if db:
         users = await db.get_all_users()
         tracked_count = len(await db.get_all_tracked_item_ids())
         embed.add_field(name="Active Users", value=str(len(users)), inline=True)
         embed.add_field(name="Tracked Items", value=str(tracked_count), inline=True)
-    
+
     embed.set_footer(text=f"Bot ID: {bot.user.id}")
-    await ctx.send(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
 
-@bot.command(name='help')
-async def bot_help(ctx):
+@bot.tree.command(name='help', description='Show help information and available commands')
+async def bot_help(interaction: discord.Interaction):
     embed = discord.Embed(
         title="Torn Market Monitor - Help",
         description="Monitor Torn item market prices and get Discord notifications!",
         color=discord.Color.blue()
     )
-    
+
     embed.add_field(
         name="/track <item_id> <max_price>",
         value="Start tracking an item. Example: `/track 206 900000`",
@@ -400,9 +409,9 @@ async def bot_help(ctx):
         value="Show bot status and configuration",
         inline=False
     )
-    
+
     embed.set_footer(text="Notifications are sent via DM when prices drop below your threshold")
-    await ctx.send(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
 
 async def cleanup():
