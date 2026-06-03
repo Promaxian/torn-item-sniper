@@ -48,25 +48,50 @@ class MarketMonitor:
     
     async def _check_market(self):
         tracked_items = await self.db.get_all_tracked_items_with_users()
-        
+
         if not tracked_items:
             logger.debug("No items being tracked, skipping market check")
             return
-        
+
         logger.info(f"Checking market for {len(tracked_items)} unique items")
-        
+
+        # Get all unique API keys from users
+        api_keys = await self.db.get_all_api_keys()
+        logger.info(f"Using {len(api_keys)} user API keys for market monitoring")
+
         for item_id, user_list in tracked_items.items():
             try:
-                raw_data = await self.api.get_item_market(item_id)
-                
+                raw_data = None
+                successful_key = None
+
+                # Try each API key until we get successful data
+                for api_key in api_keys:
+                    try:
+                        # Temporarily set the API key
+                        original_key = self.api.api_key
+                        self.api.api_key = api_key
+
+                        raw_data = await self.api.get_item_market(item_id)
+
+                        # Restore original key
+                        self.api.api_key = original_key
+
+                        if raw_data:
+                            successful_key = api_key
+                            break
+
+                    except Exception as e:
+                        logger.debug(f"Failed with API key {api_key[:4]}...: {e}")
+                        continue
+
                 if not raw_data:
-                    logger.warning(f"Failed to fetch market data for item {item_id}")
+                    logger.warning(f"Failed to fetch market data for item {item_id} with all available API keys")
                     continue
-                
+
                 market_data = self.api.extract_market_data(raw_data)
                 if not market_data:
                     continue
-                
+
                 item_info = market_data["item"]
                 if item_info.get("name"):
                     await self.db.cache_item_info(
@@ -75,17 +100,17 @@ class MarketMonitor:
                         item_type=item_info.get("type", ""),
                         average_price=item_info.get("average_price", 0)
                     )
-                
+
                 cheapest = self.api.get_cheapest_listing(market_data)
                 if not cheapest:
                     logger.debug(f"No listings available for item {item_id}")
                     continue
-                
+
                 listing_price = cheapest["price"]
                 listing_amount = cheapest["amount"]
-                
-                logger.debug(f"Item {item_id}: cheapest price = {self.api.format_price(listing_price)}")
-                
+
+                logger.debug(f"Item {item_id}: cheapest price = {self.api.format_price(listing_price)} (using key {successful_key[:4]}...)")
+
                 for user_id, max_price in user_list:
                     if listing_price < max_price:
                         await self._process_deal(
@@ -95,11 +120,11 @@ class MarketMonitor:
                             listing=cheapest,
                             max_price=max_price
                         )
-                
+
             except Exception as e:
                 logger.error(f"Error processing item {item_id}: {e}")
                 continue
-        
+
         logger.info(f"Market check completed for {len(tracked_items)} items")
     
     async def _process_deal(self, user_id: str, item_id: int, item_info: Dict, 

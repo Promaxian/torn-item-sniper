@@ -118,6 +118,13 @@ class Database:
         await self.db.commit()
         return cursor.rowcount > 0
 
+    async def get_all_api_keys(self) -> List[str]:
+        if self.db is None:
+            raise RuntimeError("Database connection not established")
+        cursor = await self.db.execute("SELECT api_key FROM api_keys")
+        rows = await cursor.fetchall()
+        return [row["api_key"] for row in rows]
+
     async def get_all_users(self) -> List[str]:
         if self.db is None:
             raise RuntimeError("Database connection not established")
