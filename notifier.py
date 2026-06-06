@@ -36,7 +36,7 @@ class DiscordNotifier:
                 market_url = f"https://www.torn.com/bazaar.php?userId={shop_id}#/"
                 embed_title = f"DEAL ALERT: {item_name} (Bazaar - {listing.get('shop_name', 'Unknown Shop')})"
             else:
-                market_url = f"https://www.torn.com/imarket.php#/p=market&step=market&type={item_id}"
+                market_url = f"https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID={item_id}"
                 embed_title = f"DEAL ALERT: {item_name} (Market)"
 
             embed = discord.Embed(
